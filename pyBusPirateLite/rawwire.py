@@ -1,5 +1,3 @@
-#! /usr/bin/env python
-# -*- coding: utf-8 -*-
 """
 Created by Sean Nelson on 2009-10-14.
 Copyright 2009 Sean Nelson <audiohacked@gmail.com>
@@ -23,7 +21,8 @@ You should have received a copy of the GNU General Public License
 along with pyBusPirate.  If not, see <http://www.gnu.org/licenses/>.
 """
 
-from .BBIO_base import BBIO_base
+from .BitBang import BitBang
+from .BBIO_base import  BBIO_base, BBIO_base, BPError, ProtocolError
 
 
 class RawWireCfg:
@@ -44,76 +43,176 @@ class RawWire(BBIO_base):
         if self.mode == 'raw':
             return
         if self.mode != 'bb':
-           super(RawWire, self).enter()
+            super(RawWire, self).enter()
 
+        # self.reset()
         self.write(0x05)
-        self.timeout(self.minDelay * 10)
+        self.timeout(self.minDelay * 5 * 10)
         if self.response(4) == "RAW1":
             self.mode = 'raw'
             self.bp_port = 0b00  # two bit port
             self.bp_config = 0b0000
             self.recurse_end()
-            return 1
-        return self.recurse_flush(self.enter_rawwire)
+            return
+        self.recurse_flush(self.enter)
+        raise BPError('Could not enter to RAW-WIRE mode')
+
+
+    def check_mode(self, mode):
+        if 'raw' != mode:
+            raise BPError("Not in RAW-WIRE mode")
 
     def start_bit(self):
         """is kept in because it was in for legacy code,
         I recommend you use send_start_bit"""
-        self.port.write(chr(0x02))
-        self.timeout(0.1)
-        return self.response(1)
+        self.check_mode('raw')
+        self.write(0x02)
+        self.timeout(self.minDelay * 2 * 10)
+        if b'\x01' != self.response(1, True):
+            raise ProtocolError("Couldn't send start bit")
 
     def stop_bit(self):
         """is kept in because it was in for legacy code,
         I recommend you use send_stop_bit"""
-        self.port.write(chr(0x03))
-        self.timeout(0.1)
-        return self.response(1)
+        self.check_mode('raw')
+        self.write(0x03)
+        self.timeout(self.minDelay * 2 * 10)
+        if b'\x01' != self.response(1, True):
+            raise ProtocolError("Couldn't send stop bit")
 
     def read_bit(self):
-        self.port.write(chr(0x07))
-        self.timeout(0.1)
-        return self.response(1)
+        self.check_mode('raw')
+        self.write(0x07)
+        self.timeout(self.minDelay * 2 * 10)
+        bit =  self.response(1, True)
+        if len(bit) == 0:
+            raise ProtocolError("Couldn't ...")
+
+        return int(bit[0])
 
     def peek(self):
-        self.port.write(chr(0x08))
-        self.timeout(0.1)
-        return self.response(1)
+        self.check_mode('raw')
+        self.write(0x08)
+        self.timeout(self.minDelay * 2 * 10)
+        if b'\x01' != self.response(1, True):
+            raise ProtocolError("Couldn't ...")
 
     def clock_tick(self):
-        self.port.write(chr(0x09))
-        self.timeout(0.1)
-        return self.response(1)
+        self.check_mode('raw')
+        self.write(0x09)
+        self.timeout(self.minDelay * 2 * 10)
+        if b'\x01' != self.response(1, True):
+            raise ProtocolError("Couldn't ...")
 
     def clock_low(self):
-        self.port.write(chr(0x0a))
-        self.timeout(0.1)
-        return self.response(1)
+        self.check_mode('raw')
+        self.write(0x0a)
+        self.timeout(self.minDelay * 2 * 10)
+        if b'\x01' != self.response(1, True):
+            raise ProtocolError("Couldn't set clock line to LOW")
 
     def clock_high(self):
-        self.port.write(chr(0x0b))
-        self.timeout(0.1)
-        return self.response(1)
+        self.check_mode('raw')
+        self.write(0x0b)
+        self.timeout(self.minDelay * 2 * 10)
+        if b'\x01' != self.response(1, True):
+            raise ProtocolError("Couldn't set clock line to HIGH")
 
     def data_low(self):
-        self.port.write(chr(0x0c))
-        self.timeout(0.1)
-        return self.response(1)
+        self.check_mode('raw')
+        self.write(0x0c)
+        self.timeout(self.minDelay * 2 * 10)
+        if b'\x01' != self.response(1, True):
+            raise ProtocolError("Couldn't set data line to LOW")
 
     def data_high(self):
-        self.port.write(chr(0x0d))
-        self.timeout(0.1)
-        return self.response(1)
+        self.check_mode('raw')
+        self.write(0x0d)
+        self.timeout(self.minDelay * 2 * 10)
+        if b'\x01' != self.response(1, True):
+            raise ProtocolError("Couldn't set data line to HIGH")
 
-    def wire_cfg(self, pins = 0):
-        self.port.write(chr(0x80 | pins))
-        self.timeout(0.1)
-        return self.response(1)
 
-    # if someone who cares could write a more user-friendly wire_cfg that would be cool
+    # def wire_cfg(self, pins = 0):
+    #     # fixme
+    #     self.check_mode('raw')
+    #     self.write(0x80 | pins))
+    #     self.timeout(self.minDelay * 2 * 10)
+    #     if b'\x01' != self.response(1, True):
+    #         raise ProtocolError("Couldn't ...")
+
+
+    def configure_peripherals(self, peripherals_dict):
+        """
+
+        :param listOfPeripherals:
+            The disc of peripherals to turn on or off, avaiable options:
+            {'POWER' : 1/0,
+             'PULLUPS' : 1/0,
+             'AUX' : 1/0,
+             'CS' : 1/0
+            }
+
+        :return:
+        """
+        # order must be the same as given option position in the BP command
+        optionList = ['CS', 'AUX', 'PULLUPS', 'POWER']
+
+        self.check_mode('raw')
+        cmdByte = 0x40
+        needWrite = False
+        for key, value in peripherals_dict.items():
+            try:
+                bitNo = optionList.index(key)
+                needWrite = True
+                if 0 != value:
+                    cmdByte |= (1 << bitNo)
+            except ValueError:
+                pass
+
+        if True == needWrite:
+            self.write(cmdByte)
+            self.timeout(self.minDelay * 10 * 2)
+            if b'\x01' != self.response(1, True):
+                raise ProtocolError("Couldn't set requested peripheral's options")
+
+
+    #if someone who cares could write a more user-friendly wire_cfg that would be cool
     # (make it similar to my configure_peripherals)
 
     def bulk_clock_ticks(self, ticks = 1):
-        self.port.write(chr(0x20 | (ticks - 1)))
-        self.timeout(0.1)
-        return self.response(1)
+        self.check_mode('raw')
+        self.write(0x20 | (ticks - 1))
+        self.timeout(self.minDelay * 2 * 10)
+        if b'\x01' != self.response(1, True):
+            raise ProtocolError("Couldn't ...")
+
+
+    def bulk_transfer(self, dataList):
+        """
+        Bulk write transfers a packet of xxxx+1 bytes to the bus. Up to 16 data bytes can be sent at once. Note that 0000
+        indicates 1 byte because there’s no reason to send 0. BP replies 0×01 to each byte in 2wire mode, returns the bus
+        read in 3wire (SPI) mode.
+
+        :param dataList:
+
+
+        """
+        bytesLen = len(dataList)
+        if (bytesLen > 16):
+            bytesLen = 16
+        elif (0 == bytesLen):
+            raise ProtocolError("Need some bytes to send!")
+
+        cmd = 0x10 | (bytesLen-1)
+        self.write(cmd)
+        for i in range(bytesLen):
+            self.write(dataList[i])
+
+        if  b'\x01' != self.response(1, True):
+            raise ValueError("Could not transfer I2C data")
+
+        self.timeout(self.minDelay * 10 * 2 * bytesLen)
+        response = self.response(bytesLen, True)
+        if bytesLen != response.count(b'\x01'):
+            raise ProtocolError('BP doesn\'t replied with expected data.')
