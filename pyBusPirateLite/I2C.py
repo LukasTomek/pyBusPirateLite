@@ -73,7 +73,6 @@ class I2C(BBIO_base):
             return
         if self.mode != 'bb':
             super(I2C, self).enter()
-
         self.write(0x02)
         self.timeout(self.minDelay * 10)
         if self.response(4) == "I2C1":
@@ -93,8 +92,12 @@ class I2C(BBIO_base):
         ProtocolError
             Did not get expected response
         """
-        self.port.write(bytes([0x06]))
-        if self.response(1, True) != 0x01:
+        self.port.flushInput()
+        self.port.write(bytes([0x02]))
+
+        self.timeout(self.minDelay * 2 * 9)
+
+        if b'\x01' != self.response(1, True):
             raise ProtocolError('Could not send I2C start bit')
 
     def stop(self):
@@ -105,8 +108,12 @@ class I2C(BBIO_base):
         ProtocolError
             Did not get expected response
         """
-        self.port.write(bytes([0x06]))
-        if self.response(1, True) != 0x01:
+        self.port.flushInput()
+        self.port.write(bytes([0x03]))
+
+        self.timeout(self.minDelay * 2 * 10)
+
+        if b'\x01' != self.response(1, True):
             raise ProtocolError('Could not send I2C stop bit')
 
     def ack(self):
@@ -120,7 +127,8 @@ class I2C(BBIO_base):
             Did not get expected response
         """
         self.port.write(bytes([0x06]))
-        if self.response(1, True) != 0x01:
+        self.timeout(self.minDelay * 2 * 10)
+        if b'\x01' != self.response(1, True):
             raise ProtocolError('Could not send ACK')
 
     def nack(self):
@@ -175,15 +183,16 @@ class I2C(BBIO_base):
         length = len(txdata)
         if length > 16:
             ValueError('A maximum of 16 bytes can be sent')
-        self.write(0x10 + length-1)
+        self.write(0x10 | (length-1))
         for data in txdata:
             self.write(data)
 
-        if self.response(1, True) != '\x01':
+        if self.response(1, True) != b'\x01':
             raise ValueError("Could not transfer I2C data")
-        self.timeout(self.minDelay * 10)
+
+        self.timeout(self.minDelay * 9 * 2 * length)
         status = []
-        for r in self.response(1, True):
+        for r in self.response(length, True):
             status.append(r == 0x00)
         return status
 
@@ -217,8 +226,8 @@ class I2C(BBIO_base):
         except KeyError:
             raise ValueError('Clock speed not supported')
         self.write(0x60 | clock)
-
-        if self.response(1, True) != 0x01:
+        self.timeout(self.minDelay * 5)
+        if b'\x01' != self.response(1, True):
             raise ProtocolError('Could not set IC2 speed')
         self.i2c_speed = frequency
 
@@ -275,39 +284,77 @@ class I2C(BBIO_base):
         0x?? - read position 256 - the requested number of bytes read from the I2C bus
         """
         self.write(0x08)
-        self.write(numtx >> 8 & 0xff)
+        self.write(numtx>>8 & 0xff)
         self.write(numtx & 0xff)
-        self.write(numrx >> 8 & 0xff)
+        self.write(numrx>>8 & 0xff)
         self.write(numrx & 0xff)
         for data in txdata:
             self.write(data)
-        if self.response(1, True) != 0x01:
+
+        ## wait for transfer to BP and from BP - uart time
+        self.timeout(self.minDelay * 16 * ((numtx+5) + (numrx)))
+        ## wait - i2c transfer time
+        i2cSpeedHz = int(self.speed[:-3]) * 1000
+        self.timeout((1/i2cSpeedHz) * 9 * (2 + numtx + numrx))
+
+        if b'\x01' != self.response(1, True):
             raise ProtocolError('Error in transmission')
+
+        return self.response(numrx, True)
 
     def aux(self, cmd):
         """ Provides extended use of AUX pin. Requires one command byte. Bus Pirate acknowledges 0x01.
 
-            +--------+------------+
-            |Command | Function   |
-            +========+============+
-            | 0x00   | AUX/CS low |
-            +--------+------------+
-            | 0x01   | AUX/CS high|
-            +--------+------------+
-            | 0x02   | AUX/CS HiZ |
-            +--------+------------+
-            | 0x03   | AUX read   |
-            +--------+------------+
-            | 0x10   | use AUX    |
-            +--------+------------+
-            | 0x20   | use CS     |
-            +--------+------------+
+        Command	Function
+        +-----|------------+
+        |0x00 | AUX/CS low |
+        |0x01 | AUX/CS high|
+        |0x02 | AUX/CS HiZ |
+        |0x03 | AUX read   |
+        |0x10 | use AUX    |
+        |0x20 | use CS     |
+        +-----|------------+
         """
-        self.write(0x09)
-        if cmd in [0x00, 0x01, 0x02, 0x03, 0x10, 0x20]:
-            self.write(cmd)
-        else:
-            raise ProtocolError('Illegal extended AUX command')
-        if self.response(1, True) != 0x01:
-            raise ProtocolError('Error in extended AUX command')
 
+        # if cmd in [0x00, 0x01, 0x02, 0x03, 0x10, 0x20]:
+        self.write(0x09)
+        self.write(cmd)
+        self.timeout(self.minDelay * 3 * 10)
+        if b'\x01' != self.response(1, True):
+                raise ProtocolError('Error in extended AUX command')
+        # else:
+            # raise ProtocolError('Illegal extended AUX command')
+
+    # fixme can be moved to in BBIO_base?
+    def configure_peripherals(self, peripherals_dict):
+        """
+
+        :param listOfPeripherals:
+            The disc of peripherals to turn on or off, available options:
+            {'POWER' : 1/0,
+             'PULLUPS' : 1/0,
+             'AUX' : 1/0,
+             'CS' : 1/0
+            }
+
+        :return:
+        """
+        # order of this list must be the same as given option position in the BP command
+        optionList = ['CS', 'AUX', 'PULLUPS', 'POWER']
+
+        cmdByte = 0x40
+        needWrite = False
+        for key, value in peripherals_dict.items():
+            try:
+                bitNo = optionList.index(key)
+                needWrite = True
+                if 0 != value:
+                    cmdByte |= (1 << bitNo)
+            except ValueError:
+                pass
+
+        if True == needWrite:
+            self.write(cmdByte)
+            self.timeout(self.minDelay * 10 * 2)
+            if b'\x01' != self.response(1, True):
+                raise ProtocolError("Couldn't set requested peripheral's options")
