@@ -21,10 +21,11 @@ You should have received a copy of the GNU General Public License
 along with pyBusPirate.  If not, see <http://www.gnu.org/licenses/>.
 """
 
-from .BBIO_base import BBIO_base, ProtocolError
+import serial
 
+from .BBIO_base import BBIO_base, BPError, ProtocolError
 
-class BitBang(BBIO_base):
+class BitBang(BBIO_base, object):
     def __init__(self, portname='', speed=115200, timeout=0.1, connect=True):
         """ Provide access to the Bus Pirate bitbang mode
 
@@ -59,9 +60,10 @@ class BitBang(BBIO_base):
 
         """
 
-        self.write(0x40 | ~ self.pins_direction & 0x1f)  # map input->1, output->0
+        self.write(0x40 | ((~self.pins_direction) & 0x1f))  # map input->1, output->0
         self.timeout(self.minDelay * 10)
         return ord(self.response(1, True)) & 0x1f
+
 
     @outputs.setter
     def outputs(self, pinlist=0):
@@ -87,8 +89,8 @@ class BitBang(BBIO_base):
             PIN_AUX, PIN_MOSI, PIN_CLK, PIN_MISO, PIN_CS
         """
         self.pins_direction = pinlist & 0x1f
-        self.write(0x40 | ~ self.pins_direction & 0x1f)  # map input->1, output->0
-        self.timeout(self.minDelay * 10)
+        self.write(0x40 | ((~self.pins_direction) & 0x1f))  # map input->1, output->0
+        self.timeout(self.minDelay * 150)
         self.response(1, True)
 
     @property
@@ -101,7 +103,7 @@ class BitBang(BBIO_base):
             PIN_POWER, PIN_PULLUP, PIN_AUX, PIN_MOSI, PIN_CLK, PIN_MISO, PIN_CS
         """
         self.write(0x80 | (self.pins_state & 0x7f))
-        self.timeout(self.minDelay * 10)
+        self.timeout(self.minDelay * 150)
         self.pins_state = ord(self.response(1, True)) & 0x7f
         return self.pins_state
 
@@ -125,8 +127,8 @@ class BitBang(BBIO_base):
         """
         self.pins_state = pinlist & 0x7f
         self.write(0x80 | self.pins_state)
-        self.timeout(self.minDelay * 10)
-        self.pins_state = ord(self.response(1, True)) & 0x7f
+        self.timeout(self.minDelay * 150)
+        self.pins_state = int(self.response(1, True)[0]) & 0x7f
 
     @property
     def adc(self):
@@ -140,6 +142,7 @@ class BitBang(BBIO_base):
         self.write(0x14)
         self.timeout(self.minDelay)
         ret = self.response(2, True)
+        print('0: %d, 1: %d' % (ret[0], ret[1]))
         voltage = (ret[0] << 8) + ret[1]
         voltage = (voltage * 6.6) / 1024
         return voltage
@@ -158,6 +161,7 @@ class BitBang(BBIO_base):
         ret = self.response(2, True)
         voltage = (ret[0] << 8) + ret[1]
         voltage = (voltage * 6.6) / 1024
+#        return voltage
 
         if voltage < 10:
             """sometimes the input gets out of sync.  This is the best error checking
@@ -173,12 +177,13 @@ class BitBang(BBIO_base):
     def stop_getting_adc_voltages(self):
         """I was encountering problems resetting out of adc mode, so I wrote this
         little function"""
+        self.check_mode('adc')
         self.port.flushInput()
         for i in range(5):
             self.write(0x00)
             #r, w, e = select.select([self.port], [], [], 0.01);
-            r = self.response(1, binary=True)
-            if r: break;
+            r = self.response(1, True)
+            if (r): break;
         self.port.flushInput()
         self.enter_bb()
         return 1
@@ -206,18 +211,15 @@ class BitBang(BBIO_base):
         int
             Number of errors
         """
-        self.port.flushInput()
         if complete is True:
             self.write(0x11)
         else:
             self.write(0x10)
-        self.timeout(1)
-        errors = self.response(1, binary=True)
+        self.timeout(self.minDelay * 50)
+        errors = self.response(1)
         self.write(0xff)
-        resp = self.response(1, binary=True)
-        if resp != b'\x01':
+        if self.response(1) != '\x01':
             raise ProtocolError('Self test did not return to bitbang mode')
-        self.timeout(self.minDelay)
         return ord(errors)
 
     def enable_PWM(self, frequency, dutycycle=.5):
@@ -261,9 +263,9 @@ class BitBang(BBIO_base):
         else:
             raise ValueError('frequency requested is invalid')
 
-        prescaler = Prescaler
-        dutycycle = OCR
-        period = PRy
+        prescaler=Prescaler
+        dutycycle=OCR
+        period=PRy
 
         self.write(0x12)
         self.write(prescaler)
